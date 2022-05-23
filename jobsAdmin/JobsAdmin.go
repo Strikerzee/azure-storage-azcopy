@@ -99,6 +99,8 @@ var JobsAdmin interface {
 	TryGetPerformanceAdvice(bytesInJob uint64, filesInJob uint32, fromTo common.FromTo, dir common.TransferDirection, p *ste.PipelineNetworkStats) []common.PerformanceAdvice
 
 	SetConcurrencySettingsToAuto()
+
+	ListJobs(givenStatus common.JobStatus) common.ListJobsResponse
 }
 
 func initJobsAdmin(appCtx context.Context, concurrency ste.ConcurrencySettings, targetRateInMegaBitsPerSec float64, azcopyJobPlanFolder string, azcopyLogPathFolder string, providePerfAdvice bool) {
@@ -385,6 +387,42 @@ func (ja *jobsAdmin) ResurrectJobParts() {
 		jm := ja.JobMgrEnsureExists(jobID, mmf.Plan().LogLevel, "")
 		jm.AddJobPart(partNum, planFile, mmf, EMPTY_SAS_STRING, EMPTY_SAS_STRING, false, nil)
 	}
+}
+
+func (ja *jobsAdmin) ListJobs(givenStatus common.JobStatus) common.ListJobsResponse {
+	ret := common.ListJobsResponse{JobIDDetails: []common.JobIDDetails{}}
+	files := func(ext string) []os.FileInfo {
+		var files []os.FileInfo
+		filepath.Walk(ja.planDir, func(path string, fileInfo os.FileInfo, _ error) error {
+			if !fileInfo.IsDir() && strings.HasSuffix(fileInfo.Name(), ext) {
+				files = append(files, fileInfo)
+			}
+			return nil
+		})
+		return files
+	}(fmt.Sprintf(".steV%d", ste.DataSchemaVersion))
+
+	// TODO : sort the file.
+	for f := 0; f < len(files); f++ {
+		planFile := ste.JobPartPlanFileName(files[f].Name())
+		jobID, partNum, err := planFile.Parse()
+		if err != nil || partNum != 0 { // Summary is in 0th JobPart
+			continue
+		}
+
+		mmf := planFile.Map()
+		jpph := mmf.Plan()
+
+		if givenStatus == common.EJobStatus.All() || givenStatus == jpph.JobStatus() {
+			ret.JobIDDetails = append(ret.JobIDDetails,
+				common.JobIDDetails{JobId: jobID, CommandString: jpph.CommandString(),
+				StartTime: jpph.StartTime, JobStatus: jpph.JobStatus()})
+		}
+
+		mmf.Unmap()
+	}
+
+	return ret
 }
 
 func (ja *jobsAdmin) SetConcurrencySettingsToAuto() {
